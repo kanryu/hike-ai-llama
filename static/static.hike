@@ -1,0 +1,2 @@
+// Importing static selects the static-link configuration in hike.mod.
+package static

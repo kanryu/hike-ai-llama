@@ -1,0 +1,3 @@
+// Importing shared activates the llama.cpp shared-library configuration in
+// the parent hike.mod.
+package shared

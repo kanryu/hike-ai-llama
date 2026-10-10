@@ -1,0 +1,172 @@
+package llama
+
+const (
+    LogLevelNone int = 0
+    LogLevelDebug int = 1
+    LogLevelInfo int = 2
+    LogLevelWarn int = 3
+    LogLevelError int = 4
+)
+
+type generationError struct { message string }
+
+func (e *generationError) Error() string {
+    return e.message
+}
+
+func newGenerationError(message string) error {
+    return &generationError{message: message}
+}
+
+extern func hike_llama_backend_init()
+extern func hike_llama_backend_free()
+extern func hike_llama_set_console_utf8()
+extern func hike_llama_set_log_level(level int)
+extern func hike_llama_load_model(path cstring, gpuLayers int) *byte
+extern func hike_llama_free_model(model *byte)
+extern func hike_llama_embedding_dimension(model *byte) int
+extern func hike_llama_create_context(model *byte, contextSize int,
+    batchSize int, threads int) *byte
+extern func hike_llama_free_context(context *byte)
+extern func hike_llama_reset_context(context *byte) int
+extern func hike_llama_save_state(context *byte, path cstring) int
+extern func hike_llama_load_state(context *byte, path cstring) int
+extern func hike_llama_set_system_prompt(context *byte, prompt cstring) int
+extern func hike_llama_generate(context *byte, prompt cstring,
+    maxTokens int, temperature float32, topP float32, seed uint32,
+    output *byte, outputCapacity int) int
+extern func hike_llama_embed(context *byte, text cstring,
+    output *float32, outputCapacity int) int
+
+type Model struct { handle *byte }
+type Context struct { handle *byte }
+
+// Initialize starts the llama.cpp backend. It is safe to call once at startup.
+func Initialize() {
+    hike_llama_backend_init()
+}
+
+// SetConsoleUTF8 configures the Windows console to display UTF-8 model output.
+func SetConsoleUTF8() {
+    hike_llama_set_console_utf8()
+}
+
+// SetLogLevel uses 0=none, 1=debug, 2=info, 3=warn, and 4=error.
+func SetLogLevel(level int) {
+    hike_llama_set_log_level(level)
+}
+
+// Shutdown releases backend-global resources after every model and context
+// has been closed.
+func Shutdown() {
+    hike_llama_backend_free()
+}
+
+// LoadModel loads a GGUF model. gpuLayers < 0 offloads all possible layers;
+// zero keeps the model on the CPU.
+func LoadModel(path string, gpuLayers int) *Model {
+    handle := hike_llama_load_model(cstring(path), gpuLayers)
+    if handle == nil { return nil }
+    return &Model{handle: handle}
+}
+
+func (model *Model) Close() {
+    if model == nil || model.handle == nil { return }
+    hike_llama_free_model(model.handle)
+    model.handle = nil
+}
+
+func (model *Model) EmbeddingDimension() int {
+    if model == nil || model.handle == nil { return 0 }
+    return hike_llama_embedding_dimension(model.handle)
+}
+
+// NewContext creates a generation context. A zero value uses llama.cpp's
+// default batch size, and a non-positive thread count uses its default.
+func (model *Model) NewContext(contextSize int, batchSize int,
+    threads int) *Context {
+    if model == nil || model.handle == nil { return nil }
+    handle := hike_llama_create_context(model.handle, contextSize,
+        batchSize, threads)
+    if handle == nil { return nil }
+    return &Context{handle: handle}
+}
+
+func (context *Context) Close() {
+    if context == nil || context.handle == nil { return }
+    hike_llama_free_context(context.handle)
+    context.handle = nil
+}
+
+// Reset discards the conversation state while keeping the model loaded.
+func (context *Context) Reset() bool {
+    if context == nil || context.handle == nil { return false }
+    return hike_llama_reset_context(context.handle) == 0
+}
+
+// SaveState stores the native conversation state. Save the readable message
+// transcript beside it so callers can display and edit the thread.
+func (context *Context) SaveState(path string) bool {
+    if context == nil || context.handle == nil { return false }
+    return hike_llama_save_state(context.handle, cstring(path)) == 0
+}
+
+// LoadState restores a state previously written by SaveState.
+func (context *Context) LoadState(path string) bool {
+    if context == nil || context.handle == nil { return false }
+    return hike_llama_load_state(context.handle, cstring(path)) == 0
+}
+
+// Embed converts text into the model's embedding vector and returns its
+// dimension. The output slice must have at least EmbeddingDimension elements.
+func (context *Context) Embed(text string, output *float32,
+    outputCapacity int) int {
+    if context == nil || context.handle == nil { return -1 }
+    return hike_llama_embed(context.handle, cstring(text), output,
+        outputCapacity)
+}
+
+// SetSystemPrompt configures the instruction used for subsequent Generate
+// calls. The model's built-in chat template formats the system and user
+// messages.
+func (context *Context) SetSystemPrompt(prompt string) bool {
+    if context == nil || context.handle == nil { return false }
+    return hike_llama_set_system_prompt(context.handle, cstring(prompt)) == 0
+}
+
+// GenerateInto writes generated UTF-8 bytes into output and returns the number of
+// bytes written. It returns a negative value on invalid arguments or a native
+// inference error. If the buffer is too small, outputCapacity bytes are
+// written and that value is returned; callers should retry with a larger
+// buffer when the result is exactly the capacity.
+func (context *Context) GenerateInto(prompt string, maxTokens int,
+    temperature float32, topP float32, seed uint32, output *byte,
+    outputCapacity int) int {
+    if context == nil || context.handle == nil { return -1 }
+    return hike_llama_generate(context.handle, cstring(prompt), maxTokens,
+        temperature, topP, seed, output, outputCapacity)
+}
+
+// Generate returns the generated UTF-8 response and an error. The output
+// buffer is managed internally, so callers do not need to allocate or
+// NUL-terminate a byte buffer themselves.
+func (context *Context) Generate(prompt string, maxTokens int,
+    temperature float32, topP float32, seed uint32) (string, error) {
+    if context == nil || context.handle == nil {
+        return "", newGenerationError("llama: context is not initialized")
+    }
+    if maxTokens <= 0 {
+        return "", newGenerationError("llama: maxTokens must be positive")
+    }
+    capacity := maxTokens * 16 + 1
+    output := make([]byte, capacity)
+    written := context.GenerateInto(prompt, maxTokens, temperature, topP,
+        seed, &output[0], capacity-1)
+    if written < 0 {
+        return "", newGenerationError("llama: generation failed")
+    }
+    if written >= capacity-1 {
+        return "", newGenerationError("llama: generated response exceeded buffer")
+    }
+    return string(output[:written]), nil
+}

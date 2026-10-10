@@ -1,0 +1,41 @@
+package main
+
+import "github.com/kanryu/hike-ai-llama/llama"
+import _ "github.com/kanryu/hike-ai-llama/shared"
+
+extern func printf(format cstring, ...) int
+
+func main() int {
+    llama.SetLogLevel(llama.LogLevelWarn)
+    llama.Initialize()
+    llama.SetConsoleUTF8()
+    defer llama.Shutdown()
+
+    model := llama.LoadModel("Qwen3-0.6B-UD-Q4_K_XL.gguf", 0)
+    if model == nil {
+        printf("could not load model\n")
+        return 1
+    }
+    defer model.Close()
+
+    context := model.NewContext(2048, 512, 0)
+    if context == nil {
+        printf("could not create context\n")
+        return 1
+    }
+    defer context.Close()
+
+    userPrompt := "Explain the key features of the NVIDIA GeForce RTX 4060 Ti with 16GB of VRAM. Cover its architecture, memory, gaming and AI use cases, power efficiency, and important limitations. Give a clear, detailed answer in several paragraphs. /no_think\n"
+    printf("\n=== REQUEST ===\n")
+    printf("[user]\n%s\n", cstring(userPrompt))
+
+    response, err := context.Generate(userPrompt, 128, 0.7, 0.8, 42)
+    if err != nil {
+        printf("generation failed: %s\n", cstring(err.Error()))
+        return 1
+    }
+    printf("\n=== MODEL RESPONSE ===\n")
+    printf("%s\n", cstring(response))
+    printf("[bytes=%d]\n", len(response))
+    return 0
+}
